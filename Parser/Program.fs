@@ -8,47 +8,62 @@ open System.IO
 
 type Basecamp = JsonProvider<"D:\\Codefest\\todos.json">
 
-
-let grabEmail (s:option<string>) :string =
-    match s with
-      | Some data ->
-                let matches = Regex.Matches(data, @"\w+([-+.]\w+)*@\w+([-.]\w+)*\.\w+([-.]\w+)*")
-                if Seq.isEmpty matches 
-                then ""
-                else
-                            matches
-                            |> Seq.cast<Match>
-                            |> Seq.map (fun m -> m.Value)
-                            |> Seq.head
-                            
-      | None -> ""
-   
-let grabName (s:string):string =
-    if s.IndexOf("(") > 0 then
-        s.Substring(0, s.IndexOf("(")).Trim();
-    else s
-
-type RecordTest = { Description: string; Title: string }
-
-let readJson :  System.Collections.Generic.List<RecordTest> =
-  let files = Directory.GetFiles "D:\\Codefest\\Data"
-
-  let results = new System.Collections.Generic.List<RecordTest>()
- 
-  for file in files do
-    let content = Basecamp.Load file
-    
-
-    let result = content |> Seq.map(fun issue -> 
-                                 let email = grabEmail issue.Description
-                                 let name = grabName issue.Title
-                                 {Description = email; Title = name}
-                              )
-                              |> Seq.toArray
-    results.AddRange result
+// module usage
+[<AutoOpen>]
+module IssueParsing =
+  // const usage
+  [<Literal>]
+  let private EmailTemplate = @"\w+([-+.]\w+)*@\w+([-.]\w+)*\.\w+([-.]\w+)*"
   
-  results
+  type private Issue =
+    { Description : string
+      Title       : string
+    }
 
+  // active pattern usage
+  let private (|RegexMatch|_|) pattern input =
+    if not (isNull input) then // null guard
+      Regex.Matches(input, pattern)
+      |> Seq.cast<Match>
+      |> Seq.map (fun m -> m.Value)
+      |> Seq.tryHead
+    else
+      None
+
+  // discrimination union
+  type Contact = Email of string | NotSpecified
+
+  // active pattern usage
+  let private (|Name|_|) (s: string) =
+      if not (isNull s) then // null guard
+        let bracketPlace = s.IndexOf("(")
+        if bracketPlace > 0
+          then s.Substring(0, bracketPlace).Trim() |> Some
+          else Some s
+      else
+        None
+
+  type Author =
+    { Name    : string
+      Contact : Contact
+    }
+
+  // Either monad usage
+  let private parseAuthor = function // pattern matching short syntax
+    | { Title = Name name; Description = RegexMatch EmailTemplate address } ->
+        Ok { Name = name; Contact = Email address }
+    
+    | { Title = Name name } ->
+        Ok { Name = name; Contact = NotSpecified }
+
+    | _ ->
+        Error "null author name"
+
+  // compose usage
+  let readAuthorsFromJson readFile =
+    Directory.GetFiles
+    // >> - compose
+    >> Seq.collect (readFile >> Seq.map parseAuthor) // Seq.collect == SelectMany
 
 [<EntryPoint>]
 let main argv =
@@ -82,22 +97,25 @@ let main argv =
     // https://3.basecamp.com/3152562/buckets/8281413/todolists/1303394617/groups.json
     // https://github.com/basecamp/bc3-api/blob/master/sections/todolist_groups.md#to-do-list-groups
     
+    let authorResults =
+      readAuthorsFromJson Basecamp.Load "D:\\Codefest\\Data"
+    
     let todos = 
         //Basecamp.GetSamples()
-        readJson
-        |> Seq.filter (fun issue ->  
-                    let name = issue.Title
-                    List.contains name selectedSpeakers |> not)
-        |> Seq.map(fun issue -> 
-                 let email = issue.Description
-                 let name = issue.Title
-                 name + "," + email
-                 )
+        authorResults
+        |> Seq.filter (function // pattern matching short syntax
+          | Ok author ->
+              not (selectedSpeakers |> List.contains author.Name)
+          | _ ->
+              false)
+        |> Seq.map (sprintf "%A") // predefined formatting
         |> Seq.distinct
 
     
     File.AppendAllLines("D:\\Codefest\\decline.csv", todos)
-    for issue in todos do
-        printfn "%s" issue
+
+    todos
+    |> Seq.iter (printfn "%s")
+
     Console.ReadLine() |> ignore
     0 
